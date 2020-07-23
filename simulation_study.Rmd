@@ -1,0 +1,1292 @@
+---
+title: "Anomaly Detection Using<br>Bayesian Hierarchical Models"
+subtitle: "Simulation Study"
+author: "Jens Meydam"
+date: "2020-07-23"
+output: 
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+<style type="text/css">
+div#TOC li {
+  list-style: none;
+  background-image: none;
+  background-repeat: none;
+  background-position: 0;
+}
+</style>
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+library(rethinking)
+library(extraDistr)
+library(actuar)
+
+# Avoid scientific notation in output
+options("scipen" = 100, "digits" = 4)
+
+```
+
+# Introduction
+
+This document is an appendix to the submitted thesis. Please refer to the 
+main text of the thesis for a description of the addressed problem and a 
+detailed explanation of the methodology. 
+
+In this study we will simulate count data by drawing samples from suitable 
+distributions with known parameters. We assume Poisson distributions
+for count values of interest and a Pareto distribution for the exposure 
+of observational units. We use reference counts as an approximate measure 
+of exposure.
+
+We will then try to recover these parameters using the simulated data and
+two types of models: a no-pooling model relying solely on the observed 
+counts for each individual unit, and a Bayesian hierarchical model 
+using partial pooling of all available information. A third model just 
+averages over all the available data (complete pooling). This third model 
+will be considered briefly but will not be pursued further since we are 
+interested in estimating individual parameters.
+
+As we use simulated data we can assess the performance of the models
+by comparing the parameter estimates against the known true values.
+
+Finally, we will use the estimated parameters to establish control limits.
+We will evaluate these limits by comparing their performance against 
+the performance of control limits based on the true parameter values,
+using new simulated data.
+
+Results will be analyzed at each step.
+
+The models and the simulation code are based on an example in 
+McElreath [2020] (401-414) and examples in Gelman et al. [2014] (43-51).
+
+# Software
+
+The analysis is done in [R](https://www.r-project.org).
+
+```{r}
+R.version.string
+```
+
+We derive the posterior distribution of the Bayesian hierarchical model
+using [Stan](https://mc-stan.org). We use McElreath's 
+[rethinking](https://github.com/rmcelreath/rethinking) package as an
+interface to Stan, which in turn builds on the 
+[rstan](https://mc-stan.org/rstan) package.
+
+The package extraDistr is used for the half-normal distribution
+and the package actuar for the Pareto distribution.
+
+```{r}
+for (package in c("StanHeaders", "rstan", "rethinking", "extraDistr", "actuar")) {
+  print(paste(paste0(package, ":"), packageVersion(package)))
+}
+```
+
+This document was created with [RMarkdown](https://rmarkdown.rstudio.com).
+
+# Simulation of Initial Data
+
+The distributions and parameters in this simulation have been chosen 
+so that the generated data is roughly comparable to the actual data 
+of interest.
+
+We assume a Pareto distribution for the exposure of observational 
+units. We use reference counts $n_i$ as an approximate measure of exposure.
+
+```{r}
+# Set number of observational units
+units <- 1000
+
+# Seed
+random_seed <- 200723
+
+# Set seed for R session (Stan has a separate seed that can be passed as 
+# an argument to the function ulam - see below)
+set.seed(random_seed)
+
+# First, simulate reference count values (used as a measure of exposure)
+
+# Draw values from a Pareto distribution with suitable parameters
+v <- rpareto2(units, min = 0, shape = 5, scale = 1000)
+
+# Transform to discrete values for count data
+n <- as.integer(ceiling(v))
+
+# n must never be 0 (and will not, since v will never be exactly 0)
+n[n == 0] <- 1
+
+# Sort values to facilitate visualization
+n <- sort(n)
+
+summary(n)
+```
+
+```{r echo=FALSE}
+hist(n, breaks = 30, main = "Distribution of Exposure (Reference Counts)", 
+     xlab = "n", ylab = "frequency", col = "black")
+```
+
+We assume Poisson distributions for the count values of interest.
+
+Each observational unit $i$ has a Poisson distribution with parameter $\lambda_i$,
+which is equal to both the mean and the variance. $\lambda_i$ is a product
+of a rate parameter $\theta_i$ and the exposure $n_i$.
+
+We use a half-normal distribution with a suitable parameter $\alpha$
+for the rate parameters $\theta_i$. 
+
+```{r}
+# Set "true" value of alpha, the parameter determining the distribution 
+# of theta in the simulated data
+alpha <- 0.05
+
+# Set "true" value of theta for each unit by drawing from a half-normal 
+# distribution with parameter alpha
+true_theta <- rhnorm(units, alpha)
+
+summary(true_theta)
+```
+
+```{r echo=FALSE}
+hist(true_theta, breaks = 30, main = "True Theta", 
+     xlab = "theta", ylab = "frequency", col = "black")
+```
+
+Given the reference counts (exposure) $n_i$ and the rate parameters $\theta_i$
+we can now draw count values of interest $y_i$ from Poisson distributions.
+
+```{r}
+y <- rpois(units, lambda = n * true_theta)
+
+summary(y)
+```
+
+```{r echo=FALSE}
+hist(y, breaks = 30, main = "Distribution of Count Values of Interest", 
+     xlab = "y", ylab = "frequency", col = "black")
+```
+
+# No-Pooling Model
+
+For the no-pooling model we estimate $\theta_i$ using only the observed
+counts of observational unit $i$. For each unit $i$ our no-pooling estimate 
+of $\theta_i$ is the ratio of the observed count values of interest $y_i$ to 
+the reference count values $n_i$.
+
+Observational units may be similar and information about other units 
+could in fact help us estimate $\theta_i$ for a particular unit $i$, 
+especially when little information is available about unit $i$. In such 
+cases the no-pooling model does not use all available information and will
+therefore be suboptimal.
+
+```{r}
+theta_nopool <- y / n
+
+summary(theta_nopool)
+```
+
+```{r echo=FALSE}
+hist(theta_nopool, breaks = 30, main = "No-Pooling Estimate of Theta", 
+     xlab = "theta", ylab = "frequency", col = "black")
+```
+
+# Complete-Pooling Model
+
+For the complete-pooling model we consider $\theta_i$ to be the same
+for all observational units. We assume that observed data can be
+treated as coming from a homogeneous source. For all units $i$ our 
+complete-pooling estimate of $\theta_i$ is the ratio of the sum of 
+the observed count values of interest $\sum y_i$ to the sum of the
+reference count values $\sum n_i$.
+
+Observational units are, however, likely to differ in important ways,
+and the available information about individual units could have given
+us hints about these differences. Using the overall average as an 
+estimate ensures that we take information about all units into account, 
+but this time we ignore the known source of the count data, which is also
+information.
+
+We expect this model to perform poorly in particular in cases where the 
+available information about a unit $i$ would have enabled us to estimate 
+$\theta_i$ with high accuracy.
+
+```{r}
+theta_complpool <- rep(sum(y) / sum(n), units)
+
+summary(theta_complpool)
+```
+
+```{r echo=FALSE}
+hist(theta_complpool, breaks = seq.int(0, 0.4, 0.001), 
+     main = "Complete-Pooling Estimate of Theta", 
+     xlab = "theta", ylab = "frequency", col = "black")
+```
+
+# Bayesian Hierarchical Model Using Partial Pooling
+
+The partial-pooling model can be seen as a compromise between the
+extremes of the no-pooling and partial-pooling models. We do not treat
+all observed data as coming from a homogeneous source, but we do assume
+that information on other units can be useful for estimating $\theta_i$ 
+of a particular unit $i$, especially when there is little information
+for a particular unit $i$.
+
+The partial-pooling model uses a hierarchical structure of probability
+distributions. We will use the same types of distributions for this model
+that we used for simulating the data.
+
+As above, we assume that each observational unit $i$ has a Poisson 
+distribution with parameter $\lambda_i$. $\lambda_i$ is a product
+of a rate parameter $\theta_i$ and the exposure $n_i$. 
+
+We use a half-normal distribution with a parameter $\alpha$ for the rate 
+parameters $\theta_i$. This time, $\alpha$ itself is also assumed to have 
+a probability distribution. We choose a half-normal distribution with a 
+fixed parameter 0.376, so that the expected value of $\alpha$ is 0.3.
+
+Note that when simulating the data we assigned $\alpha$ the value 0.05.
+The "true" value of $\alpha$ is substantially lower than the value
+initially assumed by our model.
+
+In mathematical notation our model can be specified as follows:
+
+$$ \alpha \sim HalfNormal(0.376) $$
+$$ \theta_i \sim HalfNormal(\alpha) $$
+$$ \lambda_i = n_i \theta_i $$
+$$ y_i \sim Poisson(\lambda_i) $$
+Given data in the form of reference counts $n_i$ (exposure) and
+count values of interest $y_i$, our model will allow us to determine 
+a posterior probability distribution both for the parameter $\alpha$ 
+and for the rate parameters $\theta_i$.
+
+Using Bayes' theorem we get:
+
+$$ p(\alpha, \theta_i \vert n_i, y_i) = \frac{p(\alpha, \theta_i, n_i, y_i)}{p(n_i, y_i)} = \frac{p(\alpha) p(\theta_i \vert \alpha) p(n_i, y_i \vert \theta_i)} {p(n_i, y_i)}  $$
+These mathematical expressions are deceptively simple. In most realistic
+cases it is not possible to derive the posterior distribution using calculus.
+However, it is possible to draw samples from the posterior distribution
+using Markov Chain Monte Carlo methods. Stan is state-of-the-art software
+that is capable of drawing samples from posterior distributions of Bayesian 
+hierarchical models.
+
+McElreath's rethinking package implements a formula interface to Stan
+that allows us to translate the mathematical notation above line by line
+into code (here by convention in reverse order):
+
+```{r}
+# Convert data to list of vectors
+dat <- list(unit = 1:units, n = n, y = y)
+str(dat)
+
+# Model as described in thesis
+
+# Four chains with 4000 iterations each, of which half are used for warm-up,
+# giving 8000 samples for each of the parameters
+
+m <- ulam(
+  alist(
+    y ~ dpois(lambda),
+    lambda <- n * theta[unit],
+    theta[unit] ~ dhalfnorm(0, alpha),
+    alpha ~ dhalfnorm(0, 0.376)
+  ), 
+  data = dat, 
+  chains = 4, 
+  iter = 4000,
+  seed = random_seed)
+
+# If warnings, check chains with: 
+# traceplot(m) or 
+# trankplot(m)
+
+# Generated Stan code for model
+stancode(m)
+```
+
+The function ulam() returns samples drawn from the posterior distribution
+of our model.
+
+```{r}
+# Summary and diagnostic statistics 
+# (n_eff should be ~10'000, Rhat should be 1)
+precis(m, depth = 1)
+```
+
+Note that alpha was set to a "true" value of 0.05, and that this true 
+value has been recovered precisely (standard deviation of ~0.001) by the model, 
+despite the prior dhalfnorm(0, 0.376), which has a mean of 0.3.
+
+```{r}
+# Output for the 1'000 theta parameters omitted here - can be checked with:
+# precis(m, depth = 2)
+# (n_eff should be ~10'000, Rhat should be 1)
+
+# Extract samples drawn from posterior distribution
+post <- extract.samples(m)
+
+str(post)
+dim(post$theta)
+
+# Mean of theta samples drawn from posterior distribution 
+post_theta_means <- apply(post$theta, 2, mean)
+
+str(post_theta_means)
+summary(post_theta_means)
+sd(post_theta_means)
+```
+
+```{r echo=FALSE}
+hist(post_theta_means, breaks = 20, 
+     main = "Mean of Theta Samples Drawn from Posterior", 
+     xlab = "theta", ylab = "frequency", col = "black")
+```
+
+```{r}
+# Standard deviation of theta samples drawn from posterior distribution 
+post_theta_sds <- apply(post$theta, 2, sd)
+
+str(post_theta_sds)
+summary(post_theta_sds)
+sd(post_theta_sds)
+```
+
+```{r echo=FALSE}
+hist(post_theta_sds, breaks = 20, 
+     main = "Standard Deviation of Theta Samples Drawn from Posterior", 
+     xlab = "standard deviation of samples", ylab = "frequency", col = "black")
+```
+
+Note that the theta values cannot be recovered precisely by the model.
+
+First, the standard deviation of the samples from the posterior distribution
+of theta for a given unit is in a range from ~0.001 up to around 0.03, which 
+is close to typical values of theta. 
+
+Second, the shape of the distribution of the sample means is different from 
+the shape of the true distribution, which we know in this case.
+
+The shape of the distributions will be examined more closely below.
+
+In this study we will work with point estimates, and we will use the
+sample means. To get a clearer idea of the degree of uncertainty of 
+these point estimates, we will briefly look at the relationship between 
+means and standard deviations.
+
+```{r echo=FALSE}
+plot(post_theta_means, post_theta_sds,
+     main = "Relationship Between Mean and Standard Deviation", 
+     xlab = "mean of theta samples", 
+     ylab = "standard deviation of theta samples")
+```
+
+```{r echo=FALSE}
+plot(log(post_theta_means), log(post_theta_sds),
+     main = "Relationship Between Logs of Mean and Standard Deviation", 
+     xlab = "log of mean of theta samples", 
+     ylab = "log of standard deviation of theta samples")
+```
+
+Note that higher standard deviations tend to be associated with higher means,
+although there is substantial variation.
+
+We will use the mean of the theta samples drawn from the posterior 
+distribution as the partial pooling estimate for theta.
+
+# Theta Estimates and True Values: Comparsion of Distributions
+
+First, we collect the data generated so far in a data frame:
+
+```{r}
+# Construct data frame with
+# - unit:            index for unit
+# - n:               reference count value (approximate measure of exposure)
+# - y:               count value of interest
+# - true_theta:      true value of theta
+# - theta_nopool:    no-pooling estimate of theta
+# - theta_complpool: complete-pooling estimate of theta
+# - theta_partpool:  partial-pooling estimate of theta
+d <- data.frame(unit = 1:units, 
+                n = n, 
+                y = y,
+                true_theta = true_theta, 
+                theta_nopool = theta_nopool,
+                theta_complpool = theta_complpool,
+                theta_partpool = post_theta_means)
+
+str(d)
+summary(d$n)
+summary(d$y)
+```
+
+There are four columns with values for theta: the true value and the 
+no-pooling, complete-pooling and partial-pooling estimates.
+
+```{r}
+summary(d$true_theta)
+summary(d$theta_nopool)
+summary(d$theta_complpool)
+summary(d$theta_partpool)
+```
+
+Note that the mean of the three distributions is about the same,
+but that the maximum of the no-pooling estimates is substantially 
+higher (roughly by a factor of 2) than the mean of the true values 
+of theta, whereas the maximum of the partial-pooling estimates 
+is a bit lower than that of the true values. 
+
+The minimum of the no-pooling estimates is 0, and the minimum of the 
+true values is very close to 0. The minimum of the no-pooling estimates 
+must be equal to 0 if there is at least one observed count y equal to 0, 
+making the fraction y/n equal to 0. (It was ensured that n is always greater
+than 0.) The minimum of the partial-pooling estimates is a little higher
+than that of the no-pooling estimates.
+
+As the complete-pooling estimate is the same for all observational units 
+the minimum of these estimates is equal to the maximum, and the standard
+deviation is 0.
+
+```{r echo=FALSE}
+hist(theta_complpool, breaks = seq.int(0, 1, 0.001), 
+     main = "Complete-Pooling Estimate of Theta", 
+     xlab = "theta", ylab = "frequency", 
+     xlim = c(0, 0.2),
+     col = "black")
+```
+
+```{r}
+sd(d$true_theta)
+sd(d$theta_nopool)
+sd(d$theta_complpool)
+sd(d$theta_partpool)
+```
+
+Note that the standard deviation of the no-pooling estimates is higher 
+than the standard deviation of the true values, whereas the standard 
+deviation of the partial-pooling estimates is lower.
+
+The no-pooling estimate exaggerates extremes, whereas the partial-
+pooling estimate tends to be conservative and avoids extremes.
+
+The following histograms show the frequencies for the range from 0 to 0.2:
+
+```{r echo=FALSE}
+hist(d$true_theta, breaks = seq(0, 1, 0.01), 
+     main = "True Theta", 
+     xlab = "theta", ylab = "frequency", 
+     xlim = c(0, 0.2), ylim = c(0, 300),
+     col = "black")
+```
+
+```{r echo=FALSE}
+hist(d$theta_nopool, breaks = seq(0, 1, 0.01), 
+     main = "No-Pooling Estimate of Theta", 
+     xlab = "theta", ylab = "frequency", 
+     xlim = c(0, 0.2), ylim = c(0, 300),
+     col = "black")
+```
+
+```{r echo=FALSE}
+hist(d$theta_partpool, breaks = seq(0, 1, 0.01), 
+     main = "Partial-Pooling Estimate of Theta", 
+     xlab = "theta", ylab = "frequency", 
+     xlim = c(0, 0.2), ylim = c(0, 300),
+     col = "black")
+```
+
+Note that the no-pooling estimates have more extreme values (in particular
+near 0) than the true values of theta, whereas the partial-pooling estimates 
+have fewer extreme values. 
+
+The mode of the no-pooling estimates and (less clearly) the mode of the true 
+values are at the left extreme, whereas the mode of the partial-pooling 
+estimates is shifted towards the middle of the distribution.
+
+# Absolute Errors of Theta Estimates
+
+Since in this case the true value of theta is known, it is possible to 
+determine and compare the absolute error, that is, by how much the estimates 
+miss the true value. 
+
+```{r}
+nopool_error <- abs(d$theta_nopool - d$true_theta)
+complpool_error <- abs(d$theta_complpool - d$true_theta)
+partpool_error <- abs(d$theta_partpool - d$true_theta)
+
+summary(nopool_error)
+summary(complpool_error)
+summary(partpool_error)
+```
+
+```{r echo=FALSE}
+plot(1:units, nopool_error, type = "n",
+     main = "Absolute Error of Theta Estimates (1)",
+     xlab="unit", ylab = "absolute error")
+points(1:units, complpool_error, 
+     col = rgb(1, 0, 1, 0.5), pch = 16)
+points(1:units, nopool_error, 
+       col = rgb(1, 0, 0, 0.5), pch = 16)
+legend("topright", inset = 0.05, 
+       legend = c("complete pooling", "no pooling"), 
+       col = c(rgb(1, 0, 1, 0.5), rgb(1, 0, 0, 0.5)), 
+       pch = 16, box.lty = 0, cex = 0.8)
+```
+
+```{r echo=FALSE}
+plot(1:units, nopool_error, 
+     main = "Absolute Error of Theta Estimates (2)",
+     xlab="unit", ylab = "absolute error",
+     col = rgb(1, 0, 0, 0.5), pch = 16)
+points(1:units, partpool_error, 
+       col = rgb(0, 1, 0, 0.5), pch = 16)
+legend("topright", inset = 0.05, 
+       legend = c("no pooling", "partial pooling"), 
+       col = c(rgb(1, 0, 0, 0.5), rgb(0, 1, 0, 0.5)), 
+       pch = 16, box.lty = 0, cex = 0.8)
+```
+
+Note that for the first few hundred units (those with lower reference 
+count values) the absolute errors of the no-pooling estimates (red) are often
+substantially higher than the absolute errors of the partial pooling 
+estimates (green). For the last few hundred units (those with the highest
+reference count values and mostly also higher count values of interest)
+both estimates are dominated by the data, and the absolute errors are about
+the same. Absolute errors of both estimates tend to get smaller as the
+reference count values increase, as higher reference counts tend to mean
+more accurate information with regard to theta.
+
+Also note that the complete-pooling estimate (the same estimate for all units 
+- absolute error shown in purple) does reasonably well for the first 200 
+units - better than the no-pooling estimates, and not much worse than the 
+partial-pooling estimates. Those are the units with very low exposure (very 
+low reference count values, often 0). The complete-pooling estimate, being 
+a single midpoint value, avoids the extremes of the no-pooling estimate and 
+tends to have a much lower maximum absolute error, about one half in this case.
+
+However, as we move right towards units with more exposure (higher reference
+counts), the absolute error of the complete-pooling estimate remains in
+the same range, whereas the absolute errors of both the no-pooling and partial-
+pooling estimates decrease. The mean absolute error of the complete-pooling
+estimate is about twice as high as that of the no-pooling and partial-pooling
+estimates. 
+
+```{r}
+# Means for various ranges of units (units sorted by reference count value)
+
+# Units 1-100
+mean(nopool_error[1:100])
+mean(partpool_error[1:100])
+
+# Units 1-500
+mean(nopool_error[1:500])
+mean(partpool_error[1:500])
+
+# All units (1-1000)
+mean(nopool_error)
+mean(partpool_error)
+
+# Show how the mean of the absolute error for the first N units
+# changes for increasing values of N
+
+mean_errors_up_to_n <- function(n, errors) {
+  mean(errors[1:n])
+}
+
+m_np_errs <- apply(as.matrix(1:1000), 1, 
+                   mean_errors_up_to_n, errors = nopool_error)
+m_pp_errs <- apply(as.matrix(1:1000), 1, 
+                   mean_errors_up_to_n, errors = partpool_error)
+m_cp_errs <- apply(as.matrix(1:1000), 1, 
+                   mean_errors_up_to_n, errors = complpool_error)
+
+# m_np_errs[1000]
+# mean(nopool_error)
+
+# m_pp_errs[1000]
+# mean(partpool_error)
+
+# m_cp_errs[1000]
+# mean(complpool_error)
+```
+
+```{r echo=FALSE}
+plot(m_np_errs, ylim = c(0, 0.1), type = "n",
+     main = "Mean Absolute Error of Theta Estimates up to N Units",
+     xlab="N", ylab = "mean absolute error")
+points(m_cp_errs, col = "mediumpurple2")
+points(m_np_errs, col = "firebrick2")
+points(m_pp_errs, col = "green3")
+legend("topright", inset = 0.05, 
+       legend = c("complete pooling", "no pooling", "partial pooling"), 
+       col = c("mediumpurple2", "firebrick2", "green3"), 
+       pch = 1, box.lty = 0, cex = 0.8)
+```
+
+Note that the mean absolute error of the no-pooling estimates is initially 
+(for the first 100 or so units, those with the lowest reference counts) 
+much higher - about twice as high - than the mean absolute error 
+of the partial pooling estimates. As more units with increasing reference
+count values are taken into account, the mean absolute error of both 
+estimates decreases, and the mean absolute error of the no-pooling estimates
+approaches that of the partial-pooling estimates.
+
+The mean absolute error of the complete-pooling estimate is constant and
+about as high as the mean absolute error of the partial-pooling estimates 
+for the first 50 or so units. From that point on, partial-pooling estimates
+get increasingly more accurate and the use of the complete-pooling estimate
+correspondingly less attractive.
+
+We are interested in determining appropriate control limits for individual
+units, also those with higher exposure (higher reference counts). We have seen
+that the complete-pooling estimate is not a suitable choice for this purpose.
+In the remainder of this study we will focus on no-pooling and partial-pooling 
+estimates and the corresponding control limits.
+
+# Estimated Mean of Count Values of Interest
+
+We now turn to the expected mean of the count values of interest, given a 
+certain exposure. We use a reference count value as an approximate measure
+of exposure. The reference count value will always be known, but the 
+expected mean normally has to be estimated since the expected mean also 
+depends on the parameter theta, which is generally not known.
+
+Whereas in the real world the parameter theta is normally not known, in this
+case we do know the value of theta as we set the value ourselves. Under the 
+artificial conditions of this simulation study, it is possible to compare 
+the estimated expected mean of the count values of interest to true expected 
+values. For the estimates, the observed reference count value (used as a 
+measure of exposure) is multiplied by the estimate of theta. For the true 
+expected mean, the observed reference count value is multiplied by the known 
+true value of theta.
+
+This takes us one step closer to our ultimate problem of determining 
+control limits for the detection of anomalies. Since we assume a Poisson 
+distribution, the formula for control limits depends directly and solely 
+on the expected mean, which in turn depends on the parameter theta for the
+rate and on the exposure.
+
+```{r}
+y_hat_true_theta <- d$true_theta * d$n
+y_hat_nopool <- d$theta_nopool * d$n
+y_hat_partpool <- d$theta_partpool * d$n
+
+summary(y_hat_true_theta)
+summary(y_hat_nopool)
+summary(y_hat_partpool)
+```
+
+The minimum of the no-pooling estimates is again 0, and the minimum of the 
+true values is very close to 0. The minimum of the no-pooling estimates 
+must be equal to 0 if there is at least one observed count of interest 
+equal to 0, making theta and therefore any product with theta equal to 0. 
+The minimum of the partial-pooling estimates is again a little higher
+than that of the true values, and is similar to the minimum of the complete
+pooling estimates.
+
+The mean, third quartile and maximum tend to be similar.
+
+```{r}
+sd(y_hat_true_theta)
+sd(y_hat_nopool)
+sd(y_hat_partpool)
+```
+
+The standard deviations are similar. 
+
+```{r echo=FALSE}
+hist(y_hat_true_theta[y_hat_true_theta <= 50], breaks = seq(0, 50, 1), 
+     main = "Expected Mean of Counts, Given True Theta", 
+     xlab = "expected mean", ylab = "frequency", 
+     xlim = c(0, 50), ylim = c(0, 350),
+     col = "black")
+```
+
+```{r echo=FALSE}
+hist(y_hat_nopool[y_hat_nopool <= 50], breaks = seq(0, 50, 1), 
+     main = "Expected Mean of Counts, Given No-Pooling Estimate of Theta", 
+     xlab = "expected mean", ylab = "frequency", 
+     xlim = c(0, 50), ylim = c(0, 350),
+     col = "black")
+```
+
+```{r echo=FALSE}
+hist(y_hat_partpool[y_hat_partpool <= 50], breaks = seq(0, 50, 1), 
+     main = "Expected Mean of Counts, Given Partial-Pooling Estimate of Theta", 
+     xlab = "expected mean", ylab = "frequency", 
+     xlim = c(0, 50), ylim = c(0, 350),
+     col = "black")
+```
+
+In order to get a clearer picture for the values near 0, only expected means
+up 50 are displayed.
+
+Note that the expected means given the no-pooling estimates of theta have 
+more values near or actually equal to 0 than the expected means given the 
+true values of theta, whereas the expected means given the partial-pooling
+estimates of theta appear to be distributed very similarly to the expected 
+means given the true values of theta.
+
+The mode of all three distributions is at or near zero.
+
+We now examine the estimates of the expected means for the units sorted by 
+the reference count value.
+
+```{r echo=FALSE}
+# All units (1-1000)
+plot(1:units, y_hat_nopool, 
+     main = "Estimated Means",
+     xlab="unit", ylab = "y_hat",
+     col = rgb(1, 0, 0, 0.5), pch = 16)
+points(1:units, y_hat_partpool, 
+       col = rgb(0, 1, 0, 0.5), pch = 16)
+legend("topleft", inset = 0.05, 
+       legend = c("no pooling", "partial pooling"), 
+       col = c(rgb(1, 0, 0, 0.5), rgb(0, 1, 0, 0.5)), 
+       pch = 16, box.lty = 0, cex = 0.8)
+```
+
+In general, the highest estimates of the expected means increase along 
+with the increasing reference counts. (The reference counts follow a Pareto
+distribution, so the increase of the estimates is not linear.)
+
+Note that while the area of the partial-pooling estimates almost completely
+overlaps that of the no-pooling estimates, many of the first several hundred 
+estimated means based on the no-pooling estimates appear to be either below 
+or above all of the estimated means based on the partial-pooling estimates.
+
+To see this effect more clearly the following subgroups are examined:
+
+* Units 1-200
+* units 401-600
+* units 801-1000
+
+For each subgroup, a second plot also indicates the expected means 
+given the true values of theta.
+
+## Units 1-200 
+
+```{r echo=FALSE}
+plot(1:200, y_hat_nopool[1:200], 
+     main = "Estimated Means",
+     xlab="unit", ylab = "y_hat",
+     col = rgb(1, 0, 0, 0.7), pch = 16)
+points(1:200, y_hat_partpool[1:200], 
+       col = rgb(0, 1, 0, 0.7), pch = 16)
+legend("topleft", inset = 0.05, 
+       legend = c("no pooling", "partial pooling"), 
+       col = c(rgb(1, 0, 0, 0.5), rgb(0, 1, 0, 0.5)), 
+       pch = 16, box.lty = 0, cex = 0.8)
+```
+
+```{r echo=FALSE}
+plot(1:200, y_hat_nopool[1:200], 
+     main = "Estimated and True Means",
+     xlab="unit", ylab = "y_hat",
+     col = rgb(1, 0, 0, 0.7), pch = 16)
+points(1:200, y_hat_partpool[1:200], 
+       col = rgb(0, 1, 0, 0.7), pch = 16)
+points(1:200, y_hat_true_theta[1:200], pch = 1)
+legend("topleft", inset = 0.05, 
+       legend = c("no pooling", "partial pooling", "true"), 
+       col = c(rgb(1, 0, 0, 0.5), rgb(0, 1, 0, 0.5), "black"), 
+       pch = c(16, 16, 1), box.lty = 0, cex = 0.8)
+```
+
+The higher the unit number, the higher the estimated means tend to be. 
+This is because the units are sorted in the order of their reference
+count values, which partly determine the count values of interest (together
+with the parameter theta, which is subject to random noise).
+
+Note that there are many cases among the first 200 units where the estimated
+mean based on the no-pooling estimate of theta is 0. These are the cases 
+where the observed count value of interest and therefore the no-pooling 
+estimate of theta itself is 0.
+
+In fact, the estimated means based on the no-pooling estimate of theta 
+mostly recover the observed count values of interest:
+
+```{r}
+mean(y_hat_nopool == d$y)
+```
+
+The estimated means based on the partial-pooling estimate of theta, on the 
+other hand, are never equal to 0 - not even for the first units with the 
+lowest reference counts - and the minimum values (and in general 
+the smaller values) of these means clearly tend away from 0 as we move 
+right.
+
+Note that the highest estimated means in the neighborhood of a unit are
+also based on no-pooling estimates of theta. At both extremes - both among 
+the lowest and the highest values - estimated means based on the no-pooling 
+estimate of theta dominate.
+
+In contrast, in the neighborhood of any given unit, the estimated means 
+based on the partial-pooling estimate of theta appear to be shifted away 
+from the extremes and towards the average of the observed count values in 
+this neighborhood. This effect is known as shrinkage. Essentially, this 
+means that partial-pooling is "suspicious" of extreme values when there 
+is relatively little data available (low reference counts) and corrects
+the estimates away from the observed extreme values towards what appears
+to be more typical in similar cases.
+
+
+Note that the expected means given the true values of theta do in fact
+also tend to lie between the extreme no-pooling estimates. Therefore,
+on average, it is to be expected that the partial-pooling estimates are
+closer to the true values than the no-pooling estimates.
+
+## Units 401-600
+
+A similar effect as for the first 200 units can be observed, but the
+effect is much less pronounced. 
+
+```{r echo=FALSE}
+plot(401:600, y_hat_nopool[401:600], 
+     main = "Estimated Means",
+     xlab="unit", ylab = "y_hat",
+     col = rgb(1, 0, 0, 0.7), pch = 16)
+points(401:600, y_hat_partpool[401:600], 
+       col = rgb(0, 1, 0, 0.7), pch = 16)
+legend("topleft", inset = 0.05, 
+       legend = c("no pooling", "partial pooling"), 
+       col = c(rgb(1, 0, 0, 0.5), rgb(0, 1, 0, 0.5)), 
+       pch = 16, box.lty = 0, cex = 0.8)
+```
+
+```{r echo=FALSE}
+plot(401:600, y_hat_nopool[401:600], 
+     main = "Estimated and True Means",
+     xlab="unit", ylab = "y_hat",
+     col = rgb(1, 0, 0, 0.7), pch = 16)
+points(401:600, y_hat_partpool[401:600], 
+       col = rgb(0, 1, 0, 0.7), pch = 16)
+points(401:600, y_hat_true_theta[401:600], pch = 1)
+legend("topleft", inset = 0.05, 
+       legend = c("no pooling", "partial pooling", "true"), 
+       col = c(rgb(1, 0, 0, 0.5), rgb(0, 1, 0, 0.5), "black"), 
+       pch = c(16, 16, 1), box.lty = 0, cex = 0.8)
+```
+
+Note that the true values, as the estimated means based on the
+partial-pooling estimates, tend to be slightly removed from the extremes,
+but all values - the true values and the no-pooling and partial-pooling
+estimates - are now spread fairly evenly across the whole range, with 
+decreasing density towards the higher end.
+
+Correspondingly, any improvement due to partial pooling will be hardly
+noticeable.
+
+## Units 801-1000
+
+For the last 200 units - those with the highest reference count values
+and therefore with the most reliable data - the partial-pooling estimate
+is essentially the same as the no-pooling estimate. The shrinkage effect
+is clearly visible only for the highest values. All other estimates overlap
+completely or almost completely.
+
+```{r echo=FALSE}
+plot(801:1000, y_hat_nopool[801:1000], 
+     main = "Estimated Means",
+     xlab="unit", ylab = "y_hat",
+     col = rgb(1, 0, 0, 0.7), pch = 16)
+points(801:1000, y_hat_partpool[801:1000], 
+       col = rgb(0, 1, 0, 0.7), pch = 16)
+legend("topleft", inset = 0.05, 
+       legend = c("no pooling", "partial pooling"), 
+       col = c(rgb(1, 0, 0, 0.5), rgb(0, 1, 0, 0.5)), 
+       pch = 16, box.lty = 0, cex = 0.8)
+```
+
+```{r echo=FALSE}
+plot(801:1000, y_hat_nopool[801:1000], 
+     main = "Estimated and True Means",
+     xlab="unit", ylab = "y_hat",
+     col = rgb(1, 0, 0, 0.7), pch = 16)
+points(801:1000, y_hat_partpool[801:1000], 
+       col = rgb(0, 1, 0, 0.7), pch = 16)
+points(801:1000, y_hat_true_theta[801:1000], pch = 1)
+legend("topleft", inset = 0.05, 
+       legend = c("no pooling", "partial pooling", "true"), 
+       col = c(rgb(1, 0, 0, 0.5), rgb(0, 1, 0, 0.5), "black"), 
+       pch = c(16, 16, 1), box.lty = 0, cex = 0.8)
+```
+
+The overlap of the points is exaggerated due to the compressed scale.
+If we only plot expected means up to 20 the plot changes as follows:
+
+```{r echo=FALSE}
+plot(801:1000, y_hat_nopool[801:1000], 
+     main = "Estimated Means up to 20",
+     xlab="unit", ylab = "y_hat", ylim = c(0, 20),
+     col = rgb(1, 0, 0, 0.7), pch = 16)
+points(801:1000, y_hat_partpool[801:1000], 
+       col = rgb(0, 1, 0, 0.7), pch = 16)
+legend("topleft",  
+       legend = c("no pooling", "partial pooling"), 
+       col = c(rgb(1, 0, 0, 0.5), rgb(0, 1, 0, 0.5)), 
+       pch = 16, box.lty = 1, bg = "white", cex = 0.8)
+```
+
+```{r echo=FALSE}
+plot(801:1000, y_hat_nopool[801:1000], 
+     main = "Estimated and True Means up to 20",
+     xlab="unit", ylab = "y_hat", ylim = c(0, 20),
+     col = rgb(1, 0, 0, 0.7), pch = 16)
+points(801:1000, y_hat_partpool[801:1000], 
+       col = rgb(0, 1, 0, 0.7), pch = 16)
+points(801:1000, y_hat_true_theta[801:1000], pch = 1)
+legend("topleft", 
+       legend = c("no pooling", "partial pooling", "true"), 
+       col = c(rgb(1, 0, 0, 0.5), rgb(0, 1, 0, 0.5), "black"), 
+       pch = c(16, 16, 1), box.lty = 1, bg = "white", cex = 0.8)
+```
+
+Note that at this scale many of the true values do not overlap with the 
+estimates. The observed counts, which dominate both partial- and no-pooling 
+estimates for the last 200 units, are still subject to random noise and may 
+be closer to or further away from the true means.
+
+Also note that, again, at the low end partial-pooling estimates are 
+consistently higher (and thus closer to typical estimates for similar 
+reference count values) than no-pooling estimates.
+
+# Simulation of New Data for Test of Control Limits
+
+Finally, we will determine control limits for new reference count values
+and examine the performance of these control limits with new count values 
+of interest.
+
+First we need to simulate new reference count values n_new (new exposure)
+and new count values of interest y_new.
+
+We assume new data from a subsequent period of about half the length of the 
+original period, and, in proportion, about half of n as new reference counts.
+
+The values of y_new are drawn from a Poisson distribution with parameter 
+lambda equaling the product of n_new and the true_theta.
+
+```{r}
+# Adding to data frame
+# - n_new:  new reference count values
+# - y_new:  new count values of interest
+
+d$n_new <- as.integer(ceiling(d$n / 2)) 
+d$y_new <- rpois(units, lambda = d$n_new * d$true_theta)
+
+str(d)
+summary(d$n_new)
+summary(d$y_new)
+```
+
+# Upper Control Limits (UCLs)
+
+Formula for UCL: estimated mean + 3 * estimated standard deviation
+
+(In this case, assuming a Poisson distribution, both the estimated mean and 
+the estimated variance are theta * n_new.)
+
+Round the result to the nearest integer.
+
+Add 0.5, so that count values are either above or below the UCL (as in 
+Wheeler & Chambers [1992]).
+
+```{r}
+# Adding to data frame
+# - ucl_true_theta: UCL based on n_new and true value of theta
+# - ucl_nopool:     UCL based on n_new and no-pooling estimate of theta
+# - ucl_partpool:   UCL based on n_new and partial-pooling estimate of theta
+
+d$ucl_true_theta <- round(
+  d$true_theta * d$n_new + 3 * sqrt(d$true_theta * d$n_new)
+) + 0.5
+d$ucl_nopool <- round(
+  d$theta_nopool * d$n_new + 3 * sqrt(d$theta_nopool * d$n_new)
+) + 0.5
+d$ucl_partpool <- round(
+  d$theta_partpool * d$n_new + 3 * sqrt(d$theta_partpool * d$n_new)
+) + 0.5
+
+str(d)
+summary(d$ucl_true_theta)
+summary(d$ucl_nopool)
+summary(d$ucl_partpool)
+```
+
+The control limits are determined by the expected means of the count value 
+of interest, given an observed reference count value and an estimated 
+parameter theta (estimated based on previous observations both of the count 
+value of interest and of the corresponding reference count value).
+
+Similar observations can be made as above with regard to the expected means.
+All values are shifted by 0.5, correspondingly any multiple of 0 (or of a 
+value very close to 0) among the expected means leads to a control limit
+of 0.5. The minimum of the control limits based on the partial-pooling 
+estimates is higher by 1. Apart from the minimum, the summary statistics 
+are very close.
+
+# Effectiveness of Control Limits with New Data
+
+All counts were generated according to the specified probability model and
+are therefore to be considered within the normal range (negatives, meaning
+no anomalies).
+
+Even the UCLs based on the true value of theta are likely to lead to some
+false positives when 1000 counts are checked.
+
+The UCLs based on estimates of theta are expected to lead to more false 
+positives, with the UCL based on the partial-pooling estimate of theta
+being likely to perform better especially for low counts.
+
+```{r}
+sum(d$y_new - d$ucl_true_theta > 0)
+sum(d$y_new - d$ucl_nopool > 0)
+sum(d$y_new - d$ucl_partpool > 0)
+```
+
+This result confirms what has been expected.
+
+```{r echo=FALSE}
+plot(d$y_new - d$ucl_true_theta,
+     main = "Data Relative to UCL Based on True Theta",
+     xlab="unit", ylab = "y_new - ucl_true_theta")
+abline(h = 0, lty = 1, lwd = 2)
+```
+
+```{r echo=FALSE}
+plot(d$y_new - d$ucl_nopool, col = "firebrick2",
+     main = "Data Relative to UCL Based on No-Pooling Estimate",
+     xlab="unit", ylab = "y_new - ucl_nopool")
+abline(h = 0, lty = 1, lwd = 2)
+```
+
+```{r echo=FALSE}
+plot(d$y_new - d$ucl_partpool, col = "green3",
+     main = "Data Relative to UCL Based on Partial-Pooling Estimate",
+     xlab="unit", ylab = "y_new - ucl_partpool")
+abline(h = 0, lty = 1, lwd = 2)
+```
+
+```{r}
+nrow(d[d$y_new - d$ucl_nopool > 0,])
+nrow(d[d$y_new - d$ucl_nopool > 0 & d$y == 0,]) 
+nrow(d[d$y_new - d$ucl_nopool > 0 & d$y > 0,])
+
+nrow(d[d$y_new - d$ucl_nopool > 0 & d$y == 0,]) / 
+  nrow(d[d$y_new - d$ucl_nopool > 0,])
+
+nrow(d[d$y_new - d$ucl_nopool > 0 & d$y > 0,]) /  
+  nrow(d[d$y_new - d$ucl_nopool > 0,])
+```
+
+Note that about three quarters of the new counts exceeding the control limit
+based on the no-pooling estimates are cases where the originally observed
+count of interest was 0 and therefore the control limit was set to 0.5, so
+that any count greater than 0 exceeds the control limit.
+
+```{r}
+nrow(d[d$y_new - d$ucl_nopool > 0 & d$y > 0 & ! d$y_new - d$ucl_partpool > 0,])
+nrow(d[d$y_new - d$ucl_partpool > 0 & ! d$y_new - d$ucl_nopool > 0,])
+```
+
+There are some cases among the remaining quarter where the new count does 
+not also exceed the control limit based on the partial-pooling estimate. 
+there are usually also some, but fewer, cases where a count exceeds the 
+partial-pooling control limit but not the no-pooling control limit.
+
+# Behavior with Increasing Number of Anomalies
+
+The following calculations are based on y_new_expected = ceiling(n_new * true_theta).
+
+y_new_expected is the expected value for y_new, given a new reference
+count value n_new (used as a measure of exposure) and a value for theta.
+
+Effectively we use a minimum count of one, since the true parameter theta 
+in this simulation is never exactly 0, and n_new is ceiling(n / 2) and 
+therefore also never 0 (since n is never 0).
+
+We multiply y_new_expected with a factor increasing from 1 to 8. The higher
+the factor, the more likely it is that the product will exceed the upper
+control limit (UCL).
+
+This way we can compare the behavior for the UCLs based on the estimated 
+and true values of theta.
+
+```{r}
+# Factor y_new_expected will be multiplied by, from 1 to 8, in steps of 0.01
+# (The higher the factor, to more likely the result will exceed the UCL)
+factor <- seq.int(1, 8, 0.01)
+
+# Create vectors
+true_theta_anomaly <- integer(length = length(factor))
+nopool_anomaly <- integer(length = length(factor))
+partpool_anomaly <- integer(length = length(factor))
+```
+
+## All Cases
+
+First, we will consider all cases where y_new_expected is 1 or higher 
+(that is, all 1'000 cases, since y_new_expected is at least 1).
+
+```{r}
+d_test <- d
+d_test$y_new_expected <- as.integer(ceiling(d_test$n_new * d_test$true_theta))
+d_test <- d_test[d_test$y_new_expected >= 1,]
+
+nrow(d_test)
+
+summary(d_test$y_new_expected)
+summary(d_test$y_new)
+```
+
+```{r echo=FALSE}
+for (i in 1:length(factor)) {
+  f <- factor[i]
+  true_theta_anomaly[i] <- sum(f * d_test$y_new_expected 
+                               - d_test$ucl_true_theta > 0)
+  nopool_anomaly[i] <- sum(f * d_test$y_new_expected 
+                           - d_test$ucl_nopool > 0)
+  partpool_anomaly[i] <- sum(f * d_test$y_new_expected 
+                             - d_test$ucl_partpool > 0)
+}
+```
+
+```{r echo=FALSE}
+plot(factor, true_theta_anomaly, 
+     main = "Counts Exceeding UCL with Increasing Multiples of Counts (1)",
+     xlab="factor", ylab = "counts exceeding UCL",
+     type = "n")
+lines(factor, true_theta_anomaly, col = "black", lwd = 3)
+lines(factor, nopool_anomaly, col = "firebrick2", lwd = 3)
+lines(factor, partpool_anomaly, col = "green3", lwd = 3)
+legend("bottomright", inset = 0.05, 
+       legend = c("no pooling", "partial pooling", "true"), 
+       col = c("firebrick2", "green3", "black"), 
+       lwd = 3, box.lty = 0, cex = 0.8)
+```
+
+Note that exceeding the true UCL does not necessarily indicate a 
+true positive - given enough observations, some regular count values will 
+exceed the true UCL as well, as can be seen at the left end of this graph.
+However, the UCL based on the expected means given the true values of 
+theta is the best theoretically possible UCL. 
+
+The line for the counts exceeding the partial-pooling UCL is initially
+very close to that for the counts exceeding the true UCL, whereas
+the line for the counts exceeding the no-pooling UCL is initially
+substantially higher.
+
+The line for counts exceeding the UCL based on no-pooling estimates
+starts at around 200, which are all false positives, mostly due to an 
+expected count of 0. As the factor multiplying the counts increases, 
+the product gradually also exceeds the UCL based on the expected mean
+given the true value of theta, and the gap between the lines 
+decreases.
+
+The line for counts exceeding the UCL based on partial-pooling 
+estimates starts slightly lower that the line for the true UCL. This
+is because partial pooling shifted very small but nevertheless true 
+raw estimates towards somewhat higher values, so that counts need to be 
+higher to exceed the UCL. In particular, all partial-pooling UCLs are 
+1.5 or higher, whereas some "true theta" UCLs are set to 0.5, which in 
+this case is always exceeded.
+
+As the factor multiplying the counts increases, the line for the products 
+exceeding the partial-pooling UCL approaches the line for the products 
+exceeding the no-pooling UCL, and both tend to be lower than the line for
+"true theta" UCL. The line for the "true theta" UCL is eventually higher 
+because of cases where the expected mean given the true theta is lower 
+than what the observed counts appeared to strongly indicate. (Given a 
+relatively high reference count value, partial-pooling estimates tend
+to follow the observed values wherever they happen to be, with minimal 
+difference to the no-pooling estimates.)
+
+Eventually, with a factor of about 7, all products exceed all UCLs, and
+the counts exceeding the three UCLs reach 1'000.
+
+## Cases with an Expected Count of Two or Higher
+
+Second, we will consider all cases where y_new_expected is 2 or higher.
+These tend to be cases with high reference count values. Therefore,
+fewer no-pooling estimates of theta will be 0. Partial-pooling 
+estimates will tend to rely on the observed counts and be similar
+to no-pooling estimates.
+
+```{r}
+d_test <- d
+d_test$y_new_expected <- as.integer(ceiling(d_test$n_new * d_test$true_theta))
+d_test <- d_test[d_test$y_new_expected >= 2,]
+
+nrow(d_test)
+
+summary(d_test$y_new_expected)
+summary(d_test$y_new)
+```
+
+```{r echo=FALSE}
+
+for (i in 1:length(factor)) {
+  f <- factor[i]
+  true_theta_anomaly[i] <- sum(f * d_test$y_new_expected 
+                               - d_test$ucl_true_theta > 0)
+  nopool_anomaly[i] <- sum(f * d_test$y_new_expected 
+                           - d_test$ucl_nopool > 0)
+  partpool_anomaly[i] <- sum(f * d_test$y_new_expected 
+                             - d_test$ucl_partpool > 0)
+}
+```
+
+```{r echo=FALSE}
+plot(factor, true_theta_anomaly, 
+     main = "Counts Exceeding UCL with Increasing Multiples of Counts (2)",
+     xlab="factor", ylab = "counts exceeding UCL",
+     type = "n")
+lines(factor, true_theta_anomaly, col = "black", lwd = 3)
+lines(factor, nopool_anomaly, col = "firebrick2", lwd = 3)
+lines(factor, partpool_anomaly, col = "green3", lwd = 3)
+legend("bottomright", inset = 0.05, 
+       legend = c("no pooling", "partial pooling", "true"), 
+       col = c("firebrick2", "green3", "black"), 
+       lwd = 3, box.lty = 0, cex = 0.8)
+```
+
+For those cases with two or more expected new counts - about two thirds
+of all cases - the the line for the products exceeding the partial-pooling
+UCL is very close to the line for the products exceeding the no-pooling UCL,
+apart from a start with a (much reduced) number of false positives for
+the no-pooling UCL, whereas both the partial-pooling UCL and the true UCL
+start with no or almost no false positives.
+
+Both the partial-pooling and the no-pooling UCL line tend to be higher than
+the true UCL line in the beginning (from a factor of about 0.5 to a factor
+of about 2) and lower towards the end (from a factor of about 3 to a factor
+of about 4). In both cases the estimates were led astray by the observed 
+counts, which turned out to be either significantly lower or significantly 
+higher than the true expected values, with a relatively high reference
+count.
+
+# Conclusion
+
+Bayesian hierarchical models can be used to derive realistic values
+for upper control limits (UCLs) also in cases with few or no observed
+events. The key mechanism is partial pooling of information, which
+allows to take into account what is typical for similar cases.
+
+A naive model relying solely on the observed count in each individual
+case (no pooling) is bound to perform worse. This is due to random 
+fluctuations leading to untypically high or low counts and thus to 
+too high or too low values for UCLs. 
+
+The impact of random fluctuations is largest for cases with low 
+exposure (low reference count values in our example). In particular, 
+observed counts of 0 will lead a naive model to assume that a single 
+future event is already an anomaly.
+
+For cases with high exposure a Bayesian hierarchical model tends
+to rely on the observed counts and will therefore not perform much 
+better than a naive model relying solely on observed counts. This
+strategy will lead to bad estimates in the comparatively few cases 
+where the observed count is far removed from the true expected value.
