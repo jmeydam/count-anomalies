@@ -2,7 +2,7 @@
 title: "Anomaly Detection Using<br>Bayesian Hierarchical Models"
 subtitle: "Simulation Study"
 author: "Jens Meydam"
-date: "2020-07-23"
+date: "2020-07-25"
 output: 
   html_document:
     toc: true
@@ -102,8 +102,9 @@ units. We use reference counts $n_i$ as an approximate measure of exposure.
 # Set number of observational units
 units <- 1000
 
-# Seed
-random_seed <- 200723
+# Seed - different seeds lead to slight variations, but the results
+# documented here are typical
+random_seed <- 200725
 
 # Set seed for R session (Stan has a separate seed that can be passed as 
 # an argument to the function ulam - see below)
@@ -115,13 +116,16 @@ set.seed(random_seed)
 v <- rpareto2(units, min = 0, shape = 5, scale = 1000)
 
 # Transform to discrete values for count data
-n <- as.integer(ceiling(v))
+n <- ceiling(v)
 
 # n must never be 0 (and will not, since v will never be exactly 0)
 n[n == 0] <- 1
 
 # Sort values to facilitate visualization
 n <- sort(n)
+
+# Convert to integer
+n <- as.integer(n)
 
 summary(n)
 ```
@@ -317,8 +321,8 @@ of our model.
 precis(m, depth = 1)
 ```
 
-Note that alpha was set to a "true" value of 0.05, and that this true 
-value has been recovered precisely (standard deviation of ~0.001) by the model, 
+Note that alpha was set to a "true" value of 0.05, and that this 
+true value has been recovered almost precisely by the model, 
 despite the prior dhalfnorm(0, 0.376), which has a mean of 0.3.
 
 ```{r}
@@ -1082,7 +1086,7 @@ nrow(d[d$y_new - d$ucl_nopool > 0 & d$y > 0,]) /
   nrow(d[d$y_new - d$ucl_nopool > 0,])
 ```
 
-Note that about three quarters of the new counts exceeding the control limit
+Note that most of the new counts exceeding the control limit
 based on the no-pooling estimates are cases where the originally observed
 count of interest was 0 and therefore the control limit was set to 0.5, so
 that any count greater than 0 exceeds the control limit.
