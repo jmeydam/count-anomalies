@@ -2,7 +2,7 @@
 title: "Anomaly Detection Using<br>Bayesian Hierarchical Models"
 subtitle: "Simulation Study"
 author: "Jens Meydam"
-date: "2020-07-25"
+date: "2020-07-31"
 output: 
   html_document:
     toc: true
@@ -104,7 +104,7 @@ units <- 1000
 
 # Seed - different seeds lead to slight variations, but the results
 # documented here are typical
-random_seed <- 200725
+random_seed <- 200731
 
 # Set seed for R session (Stan has a separate seed that can be passed as 
 # an argument to the function ulam - see below)
@@ -253,7 +253,7 @@ parameters $\theta_i$. This time, $\alpha$ itself is also assumed to have
 a probability distribution. We choose a half-normal distribution with a 
 fixed parameter 0.376, so that the expected value of $\alpha$ is 0.3.
 
-Note that when simulating the data we assigned $\alpha$ the value 0.05.
+Note that when simulating the data we set $\alpha$ to 0.05.
 The "true" value of $\alpha$ is substantially lower than the value
 initially assumed by our model.
 
@@ -326,7 +326,7 @@ true value has been recovered almost precisely by the model,
 despite the prior dhalfnorm(0, 0.376), which has a mean of 0.3.
 
 ```{r}
-# Output for the 1'000 theta parameters omitted here - can be checked with:
+# Output for the 1000 theta parameters omitted here - can be checked with:
 # precis(m, depth = 2)
 # (n_eff should be ~10'000, Rhat should be 1)
 
@@ -473,8 +473,8 @@ Note that the standard deviation of the no-pooling estimates is higher
 than the standard deviation of the true values, whereas the standard 
 deviation of the partial-pooling estimates is lower.
 
-The no-pooling estimate exaggerates extremes, whereas the partial-
-pooling estimate tends to be conservative and avoids extremes.
+The no-pooling estimate exaggerates extremes, whereas the partial-pooling 
+estimate tends to be conservative and avoids extremes.
 
 The following histograms show the frequencies for the range from 0 to 0.2:
 
@@ -506,9 +506,9 @@ Note that the no-pooling estimates have more extreme values (in particular
 near 0) than the true values of theta, whereas the partial-pooling estimates 
 have fewer extreme values. 
 
-The mode of the no-pooling estimates and (less clearly) the mode of the true 
-values are at the left extreme, whereas the mode of the partial-pooling 
-estimates is shifted towards the middle of the distribution.
+The mode of the no-pooling estimates and (sometimes less clearly) the mode of 
+the true values are at the left extreme, whereas the mode of the 
+partial-pooling estimates is shifted towards the middle of the distribution.
 
 # Absolute Errors of Theta Estimates
 
@@ -569,14 +569,14 @@ units - better than the no-pooling estimates, and not much worse than the
 partial-pooling estimates. Those are the units with very low exposure (very 
 low reference count values, often 0). The complete-pooling estimate, being 
 a single midpoint value, avoids the extremes of the no-pooling estimate and 
-tends to have a much lower maximum absolute error, about one half in this case.
+tends to have a much lower maximum absolute error.
 
 However, as we move right towards units with more exposure (higher reference
 counts), the absolute error of the complete-pooling estimate remains in
-the same range, whereas the absolute errors of both the no-pooling and partial-
-pooling estimates decrease. The mean absolute error of the complete-pooling
-estimate is about twice as high as that of the no-pooling and partial-pooling
-estimates. 
+the same range, whereas the absolute errors of both the no-pooling and 
+partial-pooling estimates decrease. The mean absolute error of the 
+complete-pooling estimate is about twice as high as that of the 
+partial-pooling estimates. 
 
 ```{r}
 # Means for various ranges of units (units sorted by reference count value)
@@ -661,11 +661,11 @@ depends on the parameter theta, which is generally not known.
 Whereas in the real world the parameter theta is normally not known, in this
 case we do know the value of theta as we set the value ourselves. Under the 
 artificial conditions of this simulation study, it is possible to compare 
-the estimated expected mean of the count values of interest to true expected 
-values. For the estimates, the observed reference count value (used as a 
-measure of exposure) is multiplied by the estimate of theta. For the true 
-expected mean, the observed reference count value is multiplied by the known 
-true value of theta.
+the estimated expected mean of the count values of interest to the true 
+expected values. For the estimates, the observed reference count value 
+(used as a measure of exposure) is multiplied by the estimate of theta. 
+For the true expected mean, the observed reference count value is multiplied 
+by the known true value of theta.
 
 This takes us one step closer to our ultimate problem of determining 
 control limits for the detection of anomalies. Since we assume a Poisson 
@@ -688,8 +688,7 @@ true values is very close to 0. The minimum of the no-pooling estimates
 must be equal to 0 if there is at least one observed count of interest 
 equal to 0, making theta and therefore any product with theta equal to 0. 
 The minimum of the partial-pooling estimates is again a little higher
-than that of the true values, and is similar to the minimum of the complete
-pooling estimates.
+than that of the true values.
 
 The mean, third quartile and maximum tend to be similar.
 
@@ -1035,8 +1034,8 @@ are very close.
 # Effectiveness of Control Limits with New Data
 
 All counts were generated according to the specified probability model and
-are therefore to be considered within the normal range (negatives, meaning
-no anomalies).
+are therefore to be considered within the normal range (and not 
+anomalies).
 
 Even the UCLs based on the true value of theta are likely to lead to some
 false positives when 1000 counts are checked.
@@ -1096,19 +1095,20 @@ nrow(d[d$y_new - d$ucl_nopool > 0 & d$y > 0 & ! d$y_new - d$ucl_partpool > 0,])
 nrow(d[d$y_new - d$ucl_partpool > 0 & ! d$y_new - d$ucl_nopool > 0,])
 ```
 
-There are some cases among the remaining quarter where the new count does 
+There are some examples among the remaining cases where the new count does 
 not also exceed the control limit based on the partial-pooling estimate. 
 there are usually also some, but fewer, cases where a count exceeds the 
 partial-pooling control limit but not the no-pooling control limit.
 
 # Behavior with Increasing Number of Anomalies
 
-The following calculations are based on y_new_expected = ceiling(n_new * true_theta).
+The following calculations are based on 
+y_new_expected = ceiling(n_new * true_theta).
 
 y_new_expected is the expected value for y_new, given a new reference
 count value n_new (used as a measure of exposure) and a value for theta.
 
-Effectively we use a minimum count of one, since the true parameter theta 
+Effectively we use a minimum count of 1, since the true parameter theta 
 in this simulation is never exactly 0, and n_new is ceiling(n / 2) and 
 therefore also never 0 (since n is never 0).
 
@@ -1133,7 +1133,7 @@ partpool_anomaly <- integer(length = length(factor))
 ## All Cases
 
 First, we will consider all cases where y_new_expected is 1 or higher 
-(that is, all 1'000 cases, since y_new_expected is at least 1).
+(that is, all 1000 cases, since y_new_expected is at least 1).
 
 ```{r}
 d_test <- d
@@ -1178,30 +1178,30 @@ exceed the true UCL as well, as can be seen at the left end of this graph.
 However, the UCL based on the expected means given the true values of 
 theta is the best theoretically possible UCL. 
 
-The line for the counts exceeding the partial-pooling UCL is initially
+The curve for the counts exceeding the partial-pooling UCL is initially
 very close to that for the counts exceeding the true UCL, whereas
-the line for the counts exceeding the no-pooling UCL is initially
+the curve for the counts exceeding the no-pooling UCL is initially
 substantially higher.
 
-The line for counts exceeding the UCL based on no-pooling estimates
+The curve for counts exceeding the UCL based on no-pooling estimates
 starts at around 200, which are all false positives, mostly due to an 
 expected count of 0. As the factor multiplying the counts increases, 
 the product gradually also exceeds the UCL based on the expected mean
-given the true value of theta, and the gap between the lines 
+given the true value of theta, and the gap between the curves 
 decreases.
 
-The line for counts exceeding the UCL based on partial-pooling 
-estimates starts slightly lower that the line for the true UCL. This
+Usually the curve for counts exceeding the UCL based on partial-pooling 
+estimates starts slightly lower that the curve for the true UCL. This
 is because partial pooling shifted very small but nevertheless true 
 raw estimates towards somewhat higher values, so that counts need to be 
-higher to exceed the UCL. In particular, all partial-pooling UCLs are 
-1.5 or higher, whereas some "true theta" UCLs are set to 0.5, which in 
+higher to exceed the UCL. In particular, all partial-pooling UCLs are usually
+1.5 or higher, whereas some "true theta" UCLs may be set to 0.5, which in 
 this case is always exceeded.
 
-As the factor multiplying the counts increases, the line for the products 
-exceeding the partial-pooling UCL approaches the line for the products 
-exceeding the no-pooling UCL, and both tend to be lower than the line for
-"true theta" UCL. The line for the "true theta" UCL is eventually higher 
+As the factor multiplying the counts increases, the curve for the products 
+exceeding the partial-pooling UCL approaches the curve for the products 
+exceeding the no-pooling UCL, and both tend to be lower than the curve for
+"true theta" UCL. The curve for the "true theta" UCL is eventually higher 
 because of cases where the expected mean given the true theta is lower 
 than what the observed counts appeared to strongly indicate. (Given a 
 relatively high reference count value, partial-pooling estimates tend
@@ -1209,7 +1209,7 @@ to follow the observed values wherever they happen to be, with minimal
 difference to the no-pooling estimates.)
 
 Eventually, with a factor of about 7, all products exceed all UCLs, and
-the counts exceeding the three UCLs reach 1'000.
+the counts exceeding the three UCLs reach 1000.
 
 ## Cases with an Expected Count of Two or Higher
 
@@ -1258,14 +1258,14 @@ legend("bottomright", inset = 0.05,
 ```
 
 For those cases with two or more expected new counts - about two thirds
-of all cases - the the line for the products exceeding the partial-pooling
-UCL is very close to the line for the products exceeding the no-pooling UCL,
+of all cases - the curve for the products exceeding the partial-pooling
+UCL is very close to the curve for the products exceeding the no-pooling UCL,
 apart from a start with a (much reduced) number of false positives for
 the no-pooling UCL, whereas both the partial-pooling UCL and the true UCL
 start with no or almost no false positives.
 
-Both the partial-pooling and the no-pooling UCL line tend to be higher than
-the true UCL line in the beginning (from a factor of about 0.5 to a factor
+Both the partial-pooling and the no-pooling UCL curve tend to be higher than
+the true UCL curve in the beginning (from a factor of about 0.5 to a factor
 of about 2) and lower towards the end (from a factor of about 3 to a factor
 of about 4). In both cases the estimates were led astray by the observed 
 counts, which turned out to be either significantly lower or significantly 
@@ -1294,3 +1294,4 @@ to rely on the observed counts and will therefore not perform much
 better than a naive model relying solely on observed counts. This
 strategy will lead to bad estimates in the comparatively few cases 
 where the observed count is far removed from the true expected value.
+<br/><br/>
